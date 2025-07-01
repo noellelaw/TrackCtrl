@@ -2,25 +2,36 @@ import pandas as pd
 import numpy as np
 import torch
 import xarray as xr
+import cv2
 from torch.utils.data import Dataset
 
-class HurricaneTrackReanalysisDataset(Dataset):
-    def __init__(self, csv_path, nc_path, grid_shape=(256, 256), lat_bounds=(5, 45), lon_bounds=(-100, -10)):
+class HurricaneTrackHeatmapDataset(Dataset):
+    def __init__(self, csv_path, nc_path, grid_shape=(256, 256), lat_bounds=(5, 45), lon_bounds=(-100, -10), blur_sigma=3, time_offsets_hr=[6, 12, 18, 24, 30]):
         self.df = pd.read_csv(csv_path, header=0)
         self.nc = xr.open_dataset(nc_path)
 
         self.grid_shape = grid_shape
         self.lat_bounds = lat_bounds
         self.lon_bounds = lon_bounds
+        self.blur_sigma = blur_sigma
+        self.time_offsets_hr = time_offsets_hr
 
         self.storm_groups = list(self.df.groupby('storm_id'))
-        
+
         H, W = grid_shape
         self.lat_grid = np.linspace(lat_bounds[0], lat_bounds[1], H)
         self.lon_grid = np.linspace(lon_bounds[0], lon_bounds[1], W)
 
     def __len__(self):
         return sum(len(group[1]) for group in self.storm_groups)
+
+    def latlon_to_grid(self, lat, lon):
+        H, W = self.grid_shape
+        i = int((lat - self.lat_bounds[0]) / (self.lat_bounds[1] - self.lat_bounds[0]) * (H - 1))
+        j = int((lon - self.lon_bounds[0]) / (self.lon_bounds[1] - self.lon_bounds[0]) * (W - 1))
+        i = np.clip(i, 0, H - 1)
+        j = np.clip(j, 0, W - 1)
+        return i, j
 
     def get_reanalysis_fields(self, date_str, time_str):
         time_str_padded = time_str.zfill(4)
@@ -51,24 +62,27 @@ class HurricaneTrackReanalysisDataset(Dataset):
         reanalysis = self.get_reanalysis_fields(str(current_row['date']), str(current_row['time']))
         reanalysis = torch.from_numpy(reanalysis)
 
-        # Prepare future track lat, lon, time_offset
-        base_date = str(current_row['date'])
-        base_time = str(current_row['time']).zfill(4)
-        base_datetime = pd.to_datetime(base_date + base_time, format='%Y%m%d%H%M')
+        # Base time
+        base_datetime = pd.to_datetime(
+            str(current_row['date']) + str(current_row['time']).zfill(4),
+            format='%Y%m%d%H%M'
+        )
+
+        # Prepare heatmap target
+        T = len(self.time_offsets_hr)
+        H, W = self.grid_shape
+        heatmap = np.zeros((T, H, W), dtype=np.float32)
 
         known_statuses = ['TD', 'TS', 'HU', 'EX', 'SD', 'SS', 'LO', 'WV', 'DB']
-        future_track = []
 
-        for idx_fut in range(idx + 1, len(group)):
-            row_fut = group.iloc[idx_fut]
-            row_values = row_fut.tolist()
-
-            if str(row_values[4]).strip() in known_statuses:
+        for row_fut in group.iloc[(idx+1):].itertuples():
+            row_values = list(row_fut)
+            if str(row_values[5]).strip() in known_statuses:
+                lat_str = str(row_values[6]).strip()
+                lon_str = str(row_values[7]).strip()
+            else:
                 lat_str = str(row_values[5]).strip()
                 lon_str = str(row_values[6]).strip()
-            else:
-                lat_str = str(row_values[4]).strip()
-                lon_str = str(row_values[5]).strip()
 
             if lat_str.endswith('N'):
                 lat = float(lat_str[:-1])
@@ -84,30 +98,44 @@ class HurricaneTrackReanalysisDataset(Dataset):
             else:
                 lon = -float(lon_str)
 
-            fut_date = str(row_fut['date'])
-            fut_time = str(row_fut['time']).zfill(4)
-            fut_datetime = pd.to_datetime(fut_date + fut_time, format='%Y%m%d%H%M')
-            time_offset_hr = (fut_datetime - base_datetime).total_seconds() / 3600.0
+            fut_datetime = pd.to_datetime(
+                str(row_fut.date) + str(row_fut.time).zfill(4),
+                format='%Y%m%d%H%M'
+            )
+            t_offset = (fut_datetime - base_datetime).total_seconds() / 3600.0
 
-            future_track.append([lat, lon, time_offset_hr])
+            # Find closest time offset index
+            t_idx = np.argmin(np.abs(np.array(self.time_offsets_hr) - t_offset))
+            if np.abs(self.time_offsets_hr[t_idx] - t_offset) > 3:
+                continue  # skip if no close match
 
-        future_track = torch.tensor(future_track, dtype=torch.float32)
+            i, j = self.latlon_to_grid(lat, lon)
+            heatmap[t_idx, i, j] = 1.0
 
-        # Build prompt
-        storm_name = str(current_row['storm_name']).strip()
-        date = str(current_row['date'])
-        time = str(current_row['time']).zfill(4)
-        status = str(current_row['status']) if 'status' in current_row else 'NA'
-        lat_str = str(current_row['lat'])
-        lon_str = str(current_row['lon'])
+        # Apply Gaussian blur + normalize + debug
+        for t in range(T):
+            if self.blur_sigma > 0:
+                heatmap[t] = cv2.GaussianBlur(heatmap[t], (0, 0), self.blur_sigma)
+            max_val = heatmap[t].max()
+            if max_val > 0:
+                heatmap[t] /= max_val
+            # Debug info
+            print(f"Heatmap +{self.time_offsets_hr[t]}h: min={heatmap[t].min()}, max={heatmap[t].max()}, sum={heatmap[t].sum()}")
 
-        prompt = (
-            f"Storm {storm_name}, status {status}, at {date} {time}, "
-            f"located at {lat_str}, {lon_str}."
-        )
+        heatmap = torch.from_numpy(heatmap)
+
+        # Prompt
+        storm_name = str(current_row.storm_name).strip()
+        date = str(current_row.date)
+        time = str(current_row.time).zfill(4)
+        status = str(current_row['status']) if 'status' in current_row.index else 'NA'
+        lat_s = str(current_row.lat)
+        lon_s = str(current_row.lon)
+
+        prompt = f"Storm {storm_name}, status {status}, at {date} {time}, located at {lat_s}, {lon_s}."
 
         return dict(
             conditioning=reanalysis,  # (3, H, W)
-            future_track=future_track,  # (N, 3): lat, lon, time offset
+            target=heatmap,           # (T, H, W)
             txt=prompt
         )

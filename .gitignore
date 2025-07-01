@@ -1,0 +1,16 @@
+# Ignore Python bytecode and caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# (Optional) Ignore virtual environments
+.env/
+.venv/
+env/
+venv/
+
+# (Optional) Ignore Conda environments
+*.conda
+*.env

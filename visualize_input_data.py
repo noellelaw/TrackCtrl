@@ -1,38 +1,40 @@
 import matplotlib.pyplot as plt
 import torch
-from dataset import HurricaneTrackReanalysisDataset  
+from dataset import HurricaneTrackHeatmapDataset  # Updated dataset class
 import numpy as np
 
-def plot_future_track_points(future_track, conditioning, dataset, prompt):
+def plot_future_track_heatmaps(future_heatmap, conditioning, dataset, prompt, time_offsets_hr):
     """
-    Plot future track lat/lon points over reanalysis MSL field for context.
+    Plot non-empty future track heatmaps over MSL background.
     """
-    # Extract MSL for background
     msl = conditioning[0].cpu().numpy()
+    T = future_heatmap.shape[0]
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    im = ax.imshow(msl, origin='lower', cmap='viridis')
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    ax.set_title("Future Track over MSL field")
+    # Collect indices of meaningful heatmaps
+    valid_indices = [t for t in range(T) if future_heatmap[t].sum().item() > 1e-6]
 
-    # Plot track points
-    lat_grid = dataset.lat_grid
-    lon_grid = dataset.lon_grid
+    if not valid_indices:
+        print("⚠ No valid future heatmaps to plot!")
+        return
 
-    for point in future_track:
-        lat, lon, t_offset = point.tolist()
-        # Map lat/lon to pixel space
-        i = int((lat - dataset.lat_bounds[0]) / (dataset.lat_bounds[1] - dataset.lat_bounds[0]) * (dataset.grid_shape[0] - 1))
-        j = int((lon - dataset.lon_bounds[0]) / (dataset.lon_bounds[1] - dataset.lon_bounds[0]) * (dataset.grid_shape[1] - 1))
-        i = np.clip(i, 0, dataset.grid_shape[0] - 1)
-        j = np.clip(j, 0, dataset.grid_shape[1] - 1)
+    fig, axs = plt.subplots(1, len(valid_indices), figsize=(5 * len(valid_indices), 5))
 
-        ax.plot(j, i, 'ro')  # red dot
-        ax.text(j + 2, i + 2, f"{t_offset:.1f}h", color='white', fontsize=8)
+    # If only one valid index, axs is not a list
+    if len(valid_indices) == 1:
+        axs = [axs]
 
-    plt.suptitle(prompt, fontsize=10)
+    for ax, t in zip(axs, valid_indices):
+        heat = future_heatmap[t].cpu().numpy()
+        ax.imshow(msl, origin='lower', cmap='gray', alpha=0.5)
+        im = ax.imshow(heat, origin='lower', cmap='hot', alpha=0.7, vmin=0, vmax=1)
+        ax.set_title(f"Future +{time_offsets_hr[t]}h")
+        ax.axis('off')
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    plt.suptitle(f"Future track heatmaps\n{prompt}", fontsize=12)
     plt.tight_layout()
     plt.show()
+
 
 def plot_reanalysis_channels(reanalysis, prompt, reanalysis_names=['MSL', 'U10', 'V10']):
     """
@@ -57,18 +59,19 @@ if __name__ == "__main__":
     nc_path = "datasets/era5_storms/era5_storms_combined.nc"
     csv_path = "datasets/era5_storms/hurdat2_north_atlantic.csv"
     
-    dataset = HurricaneTrackReanalysisDataset(csv_path, nc_path)
+    dataset = HurricaneTrackHeatmapDataset(csv_path, nc_path)
 
     idx = 10
     sample = dataset[idx]
 
-    future_track = sample['future_track']
+    future_heatmap = sample['target']
     conditioning = sample['conditioning']
     prompt = sample['txt']
+    time_offsets_hr = dataset.time_offsets_hr
 
-    # Plot future track over MSL
-    print(f"\n=== PLOTTING FUTURE TRACK ===")
-    plot_future_track_points(future_track, conditioning, dataset, prompt)
+    # Plot future track heatmaps
+    print(f"\n=== PLOTTING FUTURE TRACK HEATMAPS ===")
+    plot_future_track_heatmaps(future_heatmap, conditioning, dataset, prompt, time_offsets_hr)
 
     # Plot reanalysis fields
     print(f"\n=== PLOTTING REANALYSIS FIELDS ===")

@@ -1,4 +1,4 @@
-name: trackctrl2
+name: trackctrl
 channels:
   - pytorch
   - defaults

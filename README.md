@@ -10,13 +10,17 @@ Installation:
 
 3. Activate env `conda activate trackctrl`
 
+Debugging Notes: 
+If you're running into cartopy / netcdf4 / scikit-image issues with pip try: `conda install -c conda-forge <package>`
+honestly I took the environment file from control net repo and I kind of despise it, so I set up my env dependent on python 3.12 and ran a pip install -r requirements.txt after activating it, and it did wonders for my general happiness. I will update this at some point to reflect. 
+
 Goal: 
 
--Input: A hurricane track (e.g., a sequence of lat/lon positions or a gridded path mask or heatmap. Going to start with a heatmap to make it spatially aligned with wind speed and presure and baseline ddpm weights. Channel will be 0 (past track pos), 1 (current track pos), and 2 (future track pos if avail). Thinking pixel space will be a direct mapping to lat / long so do 360x360 images??).
+- Input: A hurricane track (e.g., a sequence of lat/lon positions or a gridded path mask or heatmap. Going to start with a heatmap to make it spatially aligned with wind speed and presure and baseline ddpm weights. Channel will be 0 (past track pos), 1 (current track pos), and 2 (future track pos if avail). Thinking pixel space will be a direct mapping to lat / long so do 360x360 images??).
 
--Condition: Reanalysis imagery (e.g., pressure, wind fields, sea level). I am assuming sea level is indirectly extracted via overlain coastal configuration. 
+- Condition: Reanalysis imagery (e.g., pressure, wind fields, sea level). I am assuming sea level is indirectly extracted via overlain coastal configuration. 
 
--Output: The diffusion model generates hurricane track outputs consistent with the conditioning vector. 
+- Output: The diffusion model generates hurricane track outputs consistent with the conditioning vector. 
 
 OR 
 
