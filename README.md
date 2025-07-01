@@ -10,6 +10,8 @@ Installation:
 
 3. Activate env `conda activate trackctrl`
 
+4. Finetuning from the segmentation model because I feel as though that is the closest comparasin to what reanalysis data is: https://huggingface.co/lllyasviel/ControlNet/blob/main/models/control_sd15_seg.pth
+
 Debugging Notes: 
 If you're running into cartopy / netcdf4 / scikit-image issues with pip try: `conda install -c conda-forge <package>`
 honestly I took the environment file from control net repo and I kind of despise it, so I set up my env dependent on python 3.12 and ran a pip install -r requirements.txt after activating it, and it did wonders for my general happiness. I will update this at some point to reflect. 
