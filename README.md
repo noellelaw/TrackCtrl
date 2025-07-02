@@ -30,4 +30,10 @@ OR
 - target = sequence of (lat, lon, time offset) points defining future track
 - prompt = (optional) descriptive string
 
+OR (THIS IS THE REAL OPTION AT THE MOMENT)
+Channel	Pixel value meaning
+- R (channel 0)	time offset at that grid location (e.g. hours since storm start, or normalized 0-1)
+- G (channel 1)	reanalysis composite (e.g. normalized MSLP + wind magnitude, or other field summary)
+- B (channel 2)	binary storm presence (1 if track passes over pixel, else 0) or maybe normalized lat/lon
+
 Code largely adapted from ControlNet: [GitHub](https://github.com/lllyasviel/ControlNet)

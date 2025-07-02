@@ -7,6 +7,14 @@ import numpy as np
 from inspect import isfunction
 from PIL import Image, ImageDraw, ImageFont
 
+def get_font(size=12):
+    try:
+        # Try loading your custom font
+        return ImageFont.truetype('font/DejaVuSans.ttf', size=size)
+    except (OSError, IOError):
+        # Fallback to the default PIL font
+        print("⚠️ Custom font not found. Using default font.")
+        return ImageFont.load_default()
 
 def log_txt_as_img(wh, xc, size=10):
     # wh a tuple of (width, height)
@@ -16,7 +24,7 @@ def log_txt_as_img(wh, xc, size=10):
     for bi in range(b):
         txt = Image.new("RGB", wh, color="white")
         draw = ImageDraw.Draw(txt)
-        font = ImageFont.truetype('font/DejaVuSans.ttf', size=size)
+        font = get_font()
         nc = int(40 * (wh[0] / 256))
         lines = "\n".join(xc[bi][start:start + nc] for start in range(0, len(xc[bi]), nc))
 

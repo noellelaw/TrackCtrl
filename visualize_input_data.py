@@ -1,78 +1,65 @@
 import matplotlib.pyplot as plt
 import torch
-from dataset import HurricaneTrackHeatmapDataset  # Updated dataset class
+from dataset import HurricaneTrackDataset
 import numpy as np
 
-def plot_future_track_heatmaps(future_heatmap, conditioning, dataset, prompt, time_offsets_hr):
+def plot_composite_image(composite, prompt):
     """
-    Plot non-empty future track heatmaps over MSL background.
+    Plot the composite RGB image channels separately:
+    R = normalized time
+    G = reanalysis composite
+    B = storm mask
     """
-    msl = conditioning[0].cpu().numpy()
-    T = future_heatmap.shape[0]
+    if isinstance(composite, torch.Tensor):
+        composite = composite.cpu().numpy()
 
-    # Collect indices of meaningful heatmaps
-    valid_indices = [t for t in range(T) if future_heatmap[t].sum().item() > 1e-6]
+    fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+    channel_names = ['Time (R)', 'Reanalysis (G)', 'Storm Mask (B)']
 
-    if not valid_indices:
-        print("⚠ No valid future heatmaps to plot!")
-        return
-
-    fig, axs = plt.subplots(1, len(valid_indices), figsize=(5 * len(valid_indices), 5))
-
-    # If only one valid index, axs is not a list
-    if len(valid_indices) == 1:
-        axs = [axs]
-
-    for ax, t in zip(axs, valid_indices):
-        heat = future_heatmap[t].cpu().numpy()
-        ax.imshow(msl, origin='lower', cmap='gray', alpha=0.5)
-        im = ax.imshow(heat, origin='lower', cmap='hot', alpha=0.7, vmin=0, vmax=1)
-        ax.set_title(f"Future +{time_offsets_hr[t]}h")
+    for i, ax in enumerate(axs):
+        im = ax.imshow(composite[:, :, i], origin='lower', cmap='viridis')
+        ax.set_title(channel_names[i])
         ax.axis('off')
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    plt.suptitle(f"Future track heatmaps\n{prompt}", fontsize=12)
+    plt.suptitle(f"Composite Image Visualization\n{prompt}", fontsize=12)
     plt.tight_layout()
     plt.show()
 
-
-def plot_reanalysis_channels(reanalysis, prompt, reanalysis_names=['MSL', 'U10', 'V10']):
+def plot_overlay_mask(composite):
     """
-    Plot reanalysis conditioning fields.
+    Overlay storm mask (B) on top of reanalysis (G).
     """
-    num_rean = reanalysis.shape[0]
-    fig, axs = plt.subplots(1, num_rean, figsize=(5 * num_rean, 5))
+    if isinstance(composite, torch.Tensor):
+        composite = composite.cpu().numpy()
 
-    for i in range(num_rean):
-        ax = axs[i]
-        data = reanalysis[i].cpu().numpy()
-        im = ax.imshow(data, origin='lower', cmap='viridis')
-        ax.set_title(f"{reanalysis_names[i]}")
-        ax.axis('off')
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    rean = composite[:, :, 1]
+    mask = composite[:, :, 2]
 
-    plt.suptitle(f"Reanalysis fields\n{prompt}", fontsize=12)
-    plt.tight_layout()
+    plt.figure(figsize=(6, 5))
+    plt.imshow(rean, origin='lower', cmap='gray')
+    plt.imshow(mask, origin='lower', cmap='hot', alpha=0.5)
+    plt.title("Storm Mask over Reanalysis Composite")
+    plt.colorbar()
     plt.show()
 
 if __name__ == "__main__":
     nc_path = "datasets/era5_storms/era5_storms_combined.nc"
     csv_path = "datasets/era5_storms/hurdat2_north_atlantic.csv"
     
-    dataset = HurricaneTrackHeatmapDataset(csv_path, nc_path)
+    dataset = HurricaneTrackDataset(csv_path, nc_path)
 
     idx = 10
     sample = dataset[idx]
 
-    future_heatmap = sample['target']
-    conditioning = sample['conditioning']
+    composite = sample['jpg']
     prompt = sample['txt']
-    time_offsets_hr = dataset.time_offsets_hr
+    print("Time channel: min", composite[...,0].min(), "max", composite[...,0].max(), "mean", composite[...,0].mean())
+    print("Reanalysis channel: min", composite[...,1].min(), "max", composite[...,1].max(), "mean", composite[...,1].mean())
+    print("Mask channel: min", composite[...,2].min(), "max", composite[...,2].max(), "mean", composite[...,2].mean())
 
-    # Plot future track heatmaps
-    print(f"\n=== PLOTTING FUTURE TRACK HEATMAPS ===")
-    plot_future_track_heatmaps(future_heatmap, conditioning, dataset, prompt, time_offsets_hr)
+    print(f"\n=== PLOTTING COMPOSITE IMAGE CHANNELS ===")
+    plot_composite_image(composite, prompt)
 
-    # Plot reanalysis fields
-    print(f"\n=== PLOTTING REANALYSIS FIELDS ===")
-    plot_reanalysis_channels(conditioning, prompt)
+    print(f"\n=== PLOTTING MASK OVERLAY ===")
+    plot_overlay_mask(composite)
