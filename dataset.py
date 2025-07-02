@@ -82,12 +82,14 @@ class HurricaneTrackDataset(Dataset):
         u10 = self.nc.u10.isel(valid_time=idx).interp(latitude=self.lat_grid, longitude=self.lon_grid).values
         v10 = self.nc.v10.isel(valid_time=idx).interp(latitude=self.lat_grid, longitude=self.lon_grid).values
 
-        wind_mag = np.sqrt(u10**2 + v10**2)
-        msl_norm = (msl - msl.min()) / (msl.max() - msl.min() + 1e-8)
-        wind_norm = (wind_mag - wind_mag.min()) / (wind_mag.max() - wind_mag.min() + 1e-8)
+        # Normalize each separately
+        msl_norm = (msl - np.min(msl)) / (np.max(msl) - np.min(msl) + 1e-8)
+        u10_norm = (u10 - np.min(u10)) / (np.max(u10) - np.min(u10) + 1e-8)
+        v10_norm = (v10 - np.min(v10)) / (np.max(v10) - np.min(v10) + 1e-8)
 
-        composite = 0.5 * (msl_norm + wind_norm)
-   
+        # Stack into (H, W, 3)
+        composite = np.stack([msl_norm, u10_norm, v10_norm], axis=-1).astype(np.float32)
+
         return composite
 
     def __getitem__(self, idx):
@@ -100,18 +102,19 @@ class HurricaneTrackDataset(Dataset):
         group = group.reset_index(drop=True)
         current_row = group.iloc[idx]
 
+        # Get reanalysis composite (H, W, 3)
+        reanalysis = self.get_reanalysis_composite(str(current_row['date']), str(current_row['time']))
+        reanalysis = torch.from_numpy(reanalysis).float()  # (H, W, 3)
+
+        H, W = self.grid_shape
+        target = np.zeros((H, W, 3), dtype=np.float32)  # (H, W, 3)
+
         base_datetime = pd.to_datetime(
             str(current_row['date']) + str(current_row['time']).zfill(4),
             format='%Y%m%d%H%M'
         )
 
-        H, W = self.grid_shape
-        composite_img = np.zeros((H, W, 3), dtype=np.float32)
-
-        # Reanalysis composite (same everywhere in image)
-        rean_comp = self.get_reanalysis_composite(str(current_row['date']), str(current_row['time']))
-
-        # Build composite
+        # Loop over track points
         for row_fut in group.itertuples():
             row_values = list(row_fut)
             lat, lon = self.parse_latlon(row_values)
@@ -121,13 +124,18 @@ class HurricaneTrackDataset(Dataset):
                 format='%Y%m%d%H%M'
             )
             t_offset = (fut_datetime - base_datetime).total_seconds() / 3600.0
-            t_norm = np.clip(t_offset / self.max_time_offset, 0, 1)
 
             i, j = self.latlon_to_grid(lat, lon)
 
-            composite_img[i, j, 0] = t_norm
-            composite_img[i, j, 1] = rean_comp[i, j]
-            composite_img[i, j, 2] = 1.0
+            norm_lat = (lat - self.lat_bounds[0]) / (self.lat_bounds[1] - self.lat_bounds[0])
+            norm_lon = (lon - self.lon_bounds[0]) / (self.lon_bounds[1] - self.lon_bounds[0])
+            norm_t = np.clip(t_offset / max(self.time_offsets_hr), 0, 1)
+
+            target[i, j, 0] = norm_lat
+            target[i, j, 1] = norm_lon
+            target[i, j, 2] = norm_t
+
+        target = torch.from_numpy(target).float()
 
         prompt = (
             f"Storm {str(current_row.storm_name).strip()}, "
@@ -135,20 +143,9 @@ class HurricaneTrackDataset(Dataset):
             f"at {str(current_row.date)} {str(current_row.time).zfill(4)}, "
             f"located at {str(current_row.lat)}, {str(current_row.lon)}."
         )
-                # Check ERA5 valid time vs your storm base time
-        print("Storm base datetime:", base_datetime)
-        print("Selected ERA5 valid_time:", self.nc.valid_time.values[idx])
 
-        # Check lat/lon grid overlap
-        print(f"ERA5 lat: {self.nc.latitude.min().values} to {self.nc.latitude.max().values}")
-        print(f"ERA5 lon: {self.nc.longitude.min().values} to {self.nc.longitude.max().values}")
-        print(f"My grid lat: {self.lat_grid.min()} to {self.lat_grid.max()}")
-        print(f"My grid lon: {self.lon_grid.min()} to {self.lon_grid.max()}")
-
-        # Quick reanalysis stats BEFORE normalization
-        print(f"Reanalysis raw min: {rean_comp.min()}, max: {rean_comp.max()}, mean: {rean_comp.mean()}")
- 
         return {
-            "jpg": composite_img.astype(np.float32),  # (H, W, 3), float32, [0,1]
+            "hint": reanalysis,  # (H, W, 3)
+            "jpg": target,       # (H, W, 3)
             "txt": prompt
         }
