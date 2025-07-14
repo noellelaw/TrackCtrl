@@ -100,52 +100,55 @@ class HurricaneTrackDataset(Dataset):
 
         storm_id, group = self.storm_groups[storm_idx]
         group = group.reset_index(drop=True)
-        current_row = group.iloc[idx]
 
-        # Get reanalysis composite (H, W, 3)
+        current_row = group.iloc[idx]
+        current_dt = pd.to_datetime(str(current_row['date']) + str(current_row['time']).zfill(4), format='%Y%m%d%H%M')
+
+        # Get reanalysis image at current time
         reanalysis = self.get_reanalysis_composite(str(current_row['date']), str(current_row['time']))
         reanalysis = torch.from_numpy(reanalysis).float()  # (H, W, 3)
 
-        H, W = self.grid_shape
-        target = np.zeros((H, W, 3), dtype=np.float32)  # (H, W, 3)
+        # Construct storm history tensor to trannslate to string bc what even was i doing with the crossattention beforehand 
+        # I can't believe I was feeding the storm name in as if it mattered 
+        history = []
+        for i in range(max(0, idx - len(self.time_offsets_hr)), idx):
+            past_row = group.iloc[i]
+            dt = pd.to_datetime(str(past_row['date']) + str(past_row['time']).zfill(4), format='%Y%m%d%H%M')
+            t_offset = (dt - current_dt).total_seconds() / 3600.0
 
-        base_datetime = pd.to_datetime(
-            str(current_row['date']) + str(current_row['time']).zfill(4),
-            format='%Y%m%d%H%M'
-        )
-
-        # Loop over track points
-        for row_fut in group.itertuples():
-            row_values = list(row_fut)
-            lat, lon = self.parse_latlon(row_values)
-
-            fut_datetime = pd.to_datetime(
-                str(row_fut.date) + str(row_fut.time).zfill(4),
-                format='%Y%m%d%H%M'
-            )
-            t_offset = (fut_datetime - base_datetime).total_seconds() / 3600.0
-
-            i, j = self.latlon_to_grid(lat, lon)
-
+            lat, lon = self.parse_latlon(past_row)
             norm_lat = (lat - self.lat_bounds[0]) / (self.lat_bounds[1] - self.lat_bounds[0])
             norm_lon = (lon - self.lon_bounds[0]) / (self.lon_bounds[1] - self.lon_bounds[0])
-            norm_t = np.clip(t_offset / max(self.time_offsets_hr), 0, 1)
+            norm_t = np.clip(t_offset / self.max_time_offset, -1, 0)  # Negative and normalized
 
-            target[i, j, 0] = norm_lat
-            target[i, j, 1] = norm_lon
-            target[i, j, 2] = norm_t
+            history.append([norm_t, norm_lat, norm_lon])
 
-        target = torch.from_numpy(target).float()
+        # Pad if fewer than expected steps
+        while len(history) < len(self.time_offsets_hr):
+            history.insert(0, [0.0, 0.0, 0.0])  # Zero-padding
 
-        prompt = (
-            f"Storm {str(current_row.storm_name).strip()}, "
-            f"status {str(current_row.status) if 'status' in current_row else 'NA'}, "
-            f"at {str(current_row.date)} {str(current_row.time).zfill(4)}, "
-            f"located at {str(current_row.lat)}, {str(current_row.lon)}."
+        # Convert history to string prompt
+        history_str = ", ".join(
+            [f"[t={t:.2f}, lat={lat:.3f}, lon={lon:.3f}]" for t, lat, lon in history]
         )
+        prompt = f"Given storm track: {history_str}, what will be the track at the next 6-hour increment?"
+
+        # --- Target: Next timestep location ---
+        next_idx = idx + 1
+        if next_idx >= len(group):
+            next_idx = idx  # No future point, so copy current
+        next_row = group.iloc[next_idx]
+        lat, lon = self.parse_latlon(next_row)
+
+        i, j = self.latlon_to_grid(lat, lon)
+        norm_lat = (lat - self.lat_bounds[0]) / (self.lat_bounds[1] - self.lat_bounds[0])
+        norm_lon = (lon - self.lon_bounds[0]) / (self.lon_bounds[1] - self.lon_bounds[0])
+
+        target = torch.tensor([norm_lat, norm_lon], dtype=torch.float32)
 
         return {
-            "hint": reanalysis,  # (H, W, 3)
-            "jpg": target,       # (H, W, 3)
-            "txt": prompt
+            "hint": reanalysis,         # (H, W, 3) – meteorological input
+            "prompt": prompt,           # NLP formatted history prompt
+            "target": target            # (2,) – [lat, lon] at next time
         }
+
