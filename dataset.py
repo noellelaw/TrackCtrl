@@ -36,7 +36,6 @@ class HurricaneTrackDataset(Dataset):
                 format='%Y%m%d%H%M',
                 errors='coerce'
             )
-            # Check if any points fall within ERA5 period
             if (group['datetime'] >= self.era5_start).any() and (group['datetime'] <= self.era5_end).any():
                 self.storm_groups.append((storm_id, group))
 
@@ -82,15 +81,20 @@ class HurricaneTrackDataset(Dataset):
         u10 = self.nc.u10.isel(valid_time=idx).interp(latitude=self.lat_grid, longitude=self.lon_grid).values
         v10 = self.nc.v10.isel(valid_time=idx).interp(latitude=self.lat_grid, longitude=self.lon_grid).values
 
-        # Normalize each separately
         msl_norm = (msl - np.min(msl)) / (np.max(msl) - np.min(msl) + 1e-8)
         u10_norm = (u10 - np.min(u10)) / (np.max(u10) - np.min(u10) + 1e-8)
         v10_norm = (v10 - np.min(v10)) / (np.max(v10) - np.min(v10) + 1e-8)
 
-        # Stack into (H, W, 3)
         composite = np.stack([msl_norm, u10_norm, v10_norm], axis=-1).astype(np.float32)
-
         return composite
+
+    def make_target_from_latlon(self, lat, lon, sigma=2.5):
+        H, W = self.grid_shape
+        i, j = self.latlon_to_grid(lat, lon)
+        y, x = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+        blob = np.exp(-((x - j) ** 2 + (y - i) ** 2) / (2 * sigma ** 2)).astype(np.float32)
+        target = np.stack([blob, blob, blob], axis=-1)
+        return target
 
     def __getitem__(self, idx):
         storm_idx = 0
@@ -104,12 +108,11 @@ class HurricaneTrackDataset(Dataset):
         current_row = group.iloc[idx]
         current_dt = pd.to_datetime(str(current_row['date']) + str(current_row['time']).zfill(4), format='%Y%m%d%H%M')
 
-        # Get reanalysis image at current time
         reanalysis = self.get_reanalysis_composite(str(current_row['date']), str(current_row['time']))
-        reanalysis = torch.from_numpy(reanalysis).float()  # (H, W, 3)
+        reanalysis = torch.from_numpy(reanalysis).float()
 
-        # Construct storm history tensor to trannslate to string bc what even was i doing with the crossattention beforehand 
-        # I can't believe I was feeding the storm name in as if it mattered 
+        # Construct storm history tensor to translate to string bc what even was i doing with the crossattention beforehand
+        # I can't believe I was feeding the storm name in as if it mattered
         history = []
         for i in range(max(0, idx - len(self.time_offsets_hr)), idx):
             past_row = group.iloc[i]
@@ -119,36 +122,31 @@ class HurricaneTrackDataset(Dataset):
             lat, lon = self.parse_latlon(past_row)
             norm_lat = (lat - self.lat_bounds[0]) / (self.lat_bounds[1] - self.lat_bounds[0])
             norm_lon = (lon - self.lon_bounds[0]) / (self.lon_bounds[1] - self.lon_bounds[0])
-            norm_t = np.clip(t_offset / self.max_time_offset, -1, 0)  # Negative and normalized
-
+            norm_t = np.clip(t_offset / self.max_time_offset, -1, 0)
             history.append([norm_t, norm_lat, norm_lon])
 
-        # Pad if fewer than expected steps
         while len(history) < len(self.time_offsets_hr):
-            history.insert(0, [0.0, 0.0, 0.0])  # Zero-padding
+            history.insert(0, [0.0, 0.0, 0.0])
 
-        # Convert history to string prompt
-        history_str = ", ".join(
-            [f"[t={t:.2f}, lat={lat:.3f}, lon={lon:.3f}]" for t, lat, lon in history]
-        )
+        history_str = ", ".join([
+            f"[t={t:.2f}, lat={lat:.3f}, lon={lon:.3f}]" for t, lat, lon in history
+        ])
         prompt = f"Given storm track: {history_str}, what will be the track at the next 6-hour increment?"
 
-        # --- Target: Next timestep location ---
         next_idx = idx + 1
         if next_idx >= len(group):
-            next_idx = idx  # No future point, so copy current
+            next_idx = idx
         next_row = group.iloc[next_idx]
         lat, lon = self.parse_latlon(next_row)
 
-        i, j = self.latlon_to_grid(lat, lon)
-        norm_lat = (lat - self.lat_bounds[0]) / (self.lat_bounds[1] - self.lat_bounds[0])
-        norm_lon = (lon - self.lon_bounds[0]) / (self.lon_bounds[1] - self.lon_bounds[0])
+        target = self.make_target_from_latlon(lat, lon, sigma=2.5)
+        target = torch.from_numpy(target).float()
 
-        target = torch.tensor([norm_lat, norm_lon], dtype=torch.float32)
-
+        # Create a dictionary to return reanalysis (H,W,3), prompt, and target (H,W,3)
+        # The target is a Gaussian blob centered on the next storm position, but allows
+        # us to extract uncertainty in the prediction. Postprocessing will do some argmax shenanigans.
         return {
-            "hint": reanalysis,         # (H, W, 3) – meteorological input
-            "prompt": prompt,           # NLP formatted history prompt
-            "target": target            # (2,) – [lat, lon] at next time
+            "hint": reanalysis,
+            "prompt": prompt,
+            "target": target
         }
-
