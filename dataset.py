@@ -108,7 +108,7 @@ class HurricaneTrackDataset(Dataset):
 
         # Prompt! Construct prompt bc what even was i doing with the crossattention beforehand
         # I can't believe I was feeding the storm name in as if it mattered
-        prompt = f"Storm starts at lat={norm_lat0:.3f}, lon={norm_lon0:.3f}. Predict the full trajectory."
+        prompt = f"Generate the storm's full trajectory (every 6 hours) starting from lat={norm_lat0:.3f}, lon={norm_lon0:.3f} and given reanalysis imagery."
 
         # Input! Reanalysis at origin time
         reanalysis = self.get_reanalysis_composite(str(origin_row['date']), str(origin_row['time']))
