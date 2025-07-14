@@ -97,56 +97,49 @@ class HurricaneTrackDataset(Dataset):
         return target
 
     def __getitem__(self, idx):
-        storm_idx = 0
-        while idx >= len(self.storm_groups[storm_idx][1]):
-            idx -= len(self.storm_groups[storm_idx][1])
-            storm_idx += 1
-
-        storm_id, group = self.storm_groups[storm_idx]
+        storm_id, group = self.storm_groups[idx]
         group = group.reset_index(drop=True)
 
-        current_row = group.iloc[idx]
-        current_dt = pd.to_datetime(str(current_row['date']) + str(current_row['time']).zfill(4), format='%Y%m%d%H%M')
+        # Origin row
+        origin_row = group.iloc[0]
+        lat0, lon0 = self.parse_latlon(origin_row)
+        norm_lat0 = (lat0 - self.lat_bounds[0]) / (self.lat_bounds[1] - self.lat_bounds[0])
+        norm_lon0 = (lon0 - self.lon_bounds[0]) / (self.lon_bounds[1] - self.lon_bounds[0])
 
-        reanalysis = self.get_reanalysis_composite(str(current_row['date']), str(current_row['time']))
-        reanalysis = torch.from_numpy(reanalysis).float()
-
-        # Construct storm history tensor to translate to string bc what even was i doing with the crossattention beforehand
+        # Prompt! Construct prompt bc what even was i doing with the crossattention beforehand
         # I can't believe I was feeding the storm name in as if it mattered
-        history = []
-        for i in range(max(0, idx - len(self.time_offsets_hr)), idx):
-            past_row = group.iloc[i]
-            dt = pd.to_datetime(str(past_row['date']) + str(past_row['time']).zfill(4), format='%Y%m%d%H%M')
-            t_offset = (dt - current_dt).total_seconds() / 3600.0
+        prompt = f"Storm starts at lat={norm_lat0:.3f}, lon={norm_lon0:.3f}. Predict the full trajectory."
 
-            lat, lon = self.parse_latlon(past_row)
-            norm_lat = (lat - self.lat_bounds[0]) / (self.lat_bounds[1] - self.lat_bounds[0])
-            norm_lon = (lon - self.lon_bounds[0]) / (self.lon_bounds[1] - self.lon_bounds[0])
-            norm_t = np.clip(t_offset / self.max_time_offset, -1, 0)
-            history.append([norm_t, norm_lat, norm_lon])
+        # Input! Reanalysis at origin time
+        reanalysis = self.get_reanalysis_composite(str(origin_row['date']), str(origin_row['time']))
+        reanalysis = torch.from_numpy(reanalysis).float()  # (H, W, 3)
 
-        while len(history) < len(self.time_offsets_hr):
-            history.insert(0, [0.0, 0.0, 0.0])
+        # Target! full track, Gaussian blobs at each point technically but we do have 100% certainty
+        # that the storm will be at each point in the track, so we can just use the Gaussian
+        # to encode the uncertainty in the prediction.
+        H, W = self.grid_shape
+        target = np.zeros((H, W, 3), dtype=np.float32)
+        base_time = pd.to_datetime(str(origin_row['date']) + str(origin_row['time']).zfill(4), format='%Y%m%d%H%M')
 
-        history_str = ", ".join([
-            f"[t={t:.2f}, lat={lat:.3f}, lon={lon:.3f}]" for t, lat, lon in history
-        ])
-        prompt = f"Given storm track: {history_str}, what will be the track at the next 6-hour increment?"
+        for row in group.itertuples():
+            dt = pd.to_datetime(str(row.date) + str(row.time).zfill(4), format='%Y%m%d%H%M')
+            norm_t = np.clip((dt - base_time).total_seconds() / 3600.0 / self.max_time_offset, 0, 1)
+            lat, lon = self.parse_latlon(row)
+            i, j = self.latlon_to_grid(lat, lon)
 
-        next_idx = idx + 1
-        if next_idx >= len(group):
-            next_idx = idx
-        next_row = group.iloc[next_idx]
-        lat, lon = self.parse_latlon(next_row)
+            blob = self.make_gaussian_blob(i, j, H, W, sigma=2.5)
+            target[..., 0] += blob * (lat - self.lat_bounds[0]) / (self.lat_bounds[1] - self.lat_bounds[0])  # lat
+            target[..., 1] += blob * (lon - self.lon_bounds[0]) / (self.lon_bounds[1] - self.lon_bounds[0])  # lon
+            target[..., 2] += blob * norm_t  # time encoding
 
-        target = self.make_target_from_latlon(lat, lon, sigma=2.5)
         target = torch.from_numpy(target).float()
-
+        
         # Create a dictionary to return reanalysis (H,W,3), prompt, and target (H,W,3)
         # The target is a Gaussian blob centered on the next storm position, but allows
-        # us to extract uncertainty in the prediction. Postprocessing will do some argmax shenanigans.
+        # us to extract uncertainty in the prediction. Postprocessing will do some argmax thing.
         return {
             "hint": reanalysis,
             "prompt": prompt,
             "target": target
         }
+    
