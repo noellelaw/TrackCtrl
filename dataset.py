@@ -100,37 +100,42 @@ class HurricaneTrackDataset(Dataset):
         storm_id, group = self.storm_groups[idx]
         group = group.reset_index(drop=True)
 
-        # Origin row
+        # Origin (first observation in storm track) ---
         origin_row = group.iloc[0]
         lat0, lon0 = self.parse_latlon(origin_row)
-        norm_lat0 = (lat0 - self.lat_bounds[0]) / (self.lat_bounds[1] - self.lat_bounds[0])
-        norm_lon0 = (lon0 - self.lon_bounds[0]) / (self.lon_bounds[1] - self.lon_bounds[0])
-
         # Prompt! Construct prompt bc what even was i doing with the crossattention beforehand
         # I can't believe I was feeding the storm name in as if it mattered
-        prompt = f"Generate the storm's full trajectory (every 6 hours) starting from lat={norm_lat0:.3f}, lon={norm_lon0:.3f} and given reanalysis imagery."
-
+        prompt = (
+        f"Given the origin of a tropical storm at {lat0:.2f}, {lon0:.2f} "
+        f"and the associated reanalysis imagery, predict the storm trajectory in 6-hour intervals."
+    )
         # Input! Reanalysis at origin time
         reanalysis = self.get_reanalysis_composite(str(origin_row['date']), str(origin_row['time']))
-        reanalysis = torch.from_numpy(reanalysis).float()  # (H, W, 3)
+        reanalysis = torch.from_numpy(reanalysis).float()  # shape: (H, W, 3)
 
         # Target! full track, Gaussian blobs at each point technically but we do have 100% certainty
         # that the storm will be at each point in the track, so we can just use the Gaussian
         # to encode the uncertainty in the prediction.
         H, W = self.grid_shape
         target = np.zeros((H, W, 3), dtype=np.float32)
+
         base_time = pd.to_datetime(str(origin_row['date']) + str(origin_row['time']).zfill(4), format='%Y%m%d%H%M')
 
         for row in group.itertuples():
             dt = pd.to_datetime(str(row.date) + str(row.time).zfill(4), format='%Y%m%d%H%M')
-            norm_t = np.clip((dt - base_time).total_seconds() / 3600.0 / self.max_time_offset, 0, 1)
+            hours_since_origin = (dt - base_time).total_seconds() / 3600.0
+
+            if hours_since_origin < 0 or hours_since_origin > self.max_time_offset:
+                continue  # Only use points within prediction horizon
+
+            norm_t = np.clip(hours_since_origin / self.max_time_offset, 0, 1)
             lat, lon = self.parse_latlon(row)
             i, j = self.latlon_to_grid(lat, lon)
 
             blob = self.make_gaussian_blob(i, j, H, W, sigma=2.5)
             target[..., 0] += blob * (lat - self.lat_bounds[0]) / (self.lat_bounds[1] - self.lat_bounds[0])  # lat
             target[..., 1] += blob * (lon - self.lon_bounds[0]) / (self.lon_bounds[1] - self.lon_bounds[0])  # lon
-            target[..., 2] += blob * norm_t  # time encoding
+            target[..., 2] += blob * norm_t  # normalized time since origin
 
         target = torch.from_numpy(target).float()
         
