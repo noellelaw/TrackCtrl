@@ -14,8 +14,8 @@ class HurricaneTrackDataset(Dataset):
 
         self.psmsl_df = pd.read_csv(psmsl_csv, parse_dates=["date"])
         self.psmsl_df = self.psmsl_df[
-            self.psmsl_df["lat"].between(lat_bounds[0], lat_bounds[1]) &
-            self.psmsl_df["lon"].between(lon_bounds[0], lon_bounds[1])
+            self.psmsl_df["latitude"].between(lat_bounds[0], lat_bounds[1]) &
+            self.psmsl_df["longitude"].between(lon_bounds[0], lon_bounds[1])
         ].copy()
 
         if use_anomaly and "anomaly" in self.psmsl_df.columns:
