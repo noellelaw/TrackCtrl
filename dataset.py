@@ -47,7 +47,9 @@ class HurricaneTrackDataset(Dataset):
         self.lon_grid = np.linspace(lon_bounds[0], lon_bounds[1], W)
 
     def __len__(self):
-        return sum(len(group[1]) for group in self.storm_groups)
+        #return sum(len(group[1]) for group in self.storm_groups)
+        # one sample per storm
+        return len(self.storm_groups)
 
     def make_gaussian_blob(self, i, j, H, W, sigma=2.5, normalize=True, eps=1e-8):
         """
