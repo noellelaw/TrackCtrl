@@ -71,15 +71,7 @@ class HurricaneTrackDataset(Dataset):
         lon = float(lon_str[:-1]) * (-1 if lon_str.endswith('W') else 1) if lon_str[-1] in 'EW' else float(lon_str)
         return lat, lon
 
-    def __getitem__(self, idx):
-        storm_id, group = self.storm_groups[idx]
-        origin_row = group.iloc[0]
-        lat0, lon0 = self.parse_latlon(origin_row)
-        prompt = f"Given storm origin at {lat0:.2f}, {lon0:.2f}, predict its track."
-        hint = torch.from_numpy(
-            self.get_reanalysis_composite(str(origin_row["date"]), str(origin_row["time"]))
-        )
-        return {"hint": hint, "txt": prompt}
+    
     
     def latlon_to_grid(self, lat, lon):
         H, W = self.grid_shape
@@ -134,3 +126,13 @@ class HurricaneTrackDataset(Dataset):
             return a
 
         return np.stack([norm(u10), norm(v10), norm(gauges)], axis=-1)
+    
+    def __getitem__(self, idx):
+        storm_id, group = self.storm_groups[idx]
+        origin_row = group.iloc[0]
+        lat0, lon0 = self.parse_latlon(origin_row)
+        prompt = f"Given storm origin at {lat0:.2f}, {lon0:.2f}, predict its track."
+        hint = torch.from_numpy(
+            self.get_reanalysis_composite(str(origin_row["date"]), str(origin_row["time"]))
+        )
+        return {"hint": hint, "txt": prompt}
