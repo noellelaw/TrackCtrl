@@ -171,7 +171,7 @@ class HurricaneTrackDataset(Dataset):
         # us to extract uncertainty in the prediction. Postprocessing will do some argmax thing.
         return {
             "hint": reanalysis,
-            "prompt": prompt,
-            "target": target
+            "txt": prompt,
+            "jpg": target
         }
     
