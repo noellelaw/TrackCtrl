@@ -49,6 +49,31 @@ class HurricaneTrackDataset(Dataset):
     def __len__(self):
         return sum(len(group[1]) for group in self.storm_groups)
 
+    def make_gaussian_blob(self, i, j, H, W, sigma=2.5, normalize=True, eps=1e-8):
+        """
+        Create a 2D Gaussian blob centered at (i, j) on an HxW grid.
+
+        Args:
+            i, j (int): Center (row, col) in pixel indices.
+            H, W (int): Grid height and width.
+            sigma (float): Standard deviation of the Gaussian in pixels.
+            normalize (bool): If True, scale so peak value is 1.0.
+            eps (float): Tiny constant to avoid division by zero.
+
+        Returns:
+            np.ndarray of shape (H, W), dtype float32.
+        """
+        y = np.arange(H, dtype=np.float32)[:, None]  # (H,1)
+        x = np.arange(W, dtype=np.float32)[None, :]  # (1,W)
+        blob = np.exp(-((x - j)**2 + (y - i)**2) / (2.0 * (sigma**2))).astype(np.float32)
+
+        if normalize:
+            m = float(blob.max())
+            if m > eps:
+                blob /= m
+
+        return blob
+
     def latlon_to_grid(self, lat, lon):
         H, W = self.grid_shape
         i = int((lat - self.lat_bounds[0]) / (self.lat_bounds[1] - self.lat_bounds[0]) * (H - 1))
