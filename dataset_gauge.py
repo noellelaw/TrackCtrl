@@ -60,6 +60,27 @@ class HurricaneTrackDataset(Dataset):
         self.lat_grid = np.linspace(lat_bounds[0], lat_bounds[1], H)
         self.lon_grid = np.linspace(lon_bounds[0], lon_bounds[1], W)
 
+    def __len__(self):
+        return len(self.storm_groups)
+
+    def parse_latlon(self, row_values):
+        # Same logic you had before to parse HURDAT lat/lon strings
+        lat_str = str(row_values['lat']) if 'lat' in row_values else str(row_values['latitude'])
+        lon_str = str(row_values['lon']) if 'lon' in row_values else str(row_values['longitude'])
+        lat = float(lat_str[:-1]) * (-1 if lat_str.endswith('S') else 1) if lat_str[-1] in 'NS' else float(lat_str)
+        lon = float(lon_str[:-1]) * (-1 if lon_str.endswith('W') else 1) if lon_str[-1] in 'EW' else float(lon_str)
+        return lat, lon
+
+    def __getitem__(self, idx):
+        storm_id, group = self.storm_groups[idx]
+        origin_row = group.iloc[0]
+        lat0, lon0 = self.parse_latlon(origin_row)
+        prompt = f"Given storm origin at {lat0:.2f}, {lon0:.2f}, predict its track."
+        hint = torch.from_numpy(
+            self.get_reanalysis_composite(str(origin_row["date"]), str(origin_row["time"]))
+        )
+        return {"hint": hint, "txt": prompt}
+    
     def latlon_to_grid(self, lat, lon):
         H, W = self.grid_shape
         i = int((lat - self.lat_bounds[0]) / (self.lat_bounds[1] - self.lat_bounds[0]) * (H - 1))
