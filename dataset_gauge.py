@@ -18,12 +18,12 @@ class HurricaneTrackDataset(Dataset):
             self.psmsl_df["longitude"].between(lon_bounds[0], lon_bounds[1])
         ].copy()
 
-        if use_anomaly and "anomaly" in self.psmsl_df.columns:
-            self.psmsl_df["value"] = self.psmsl_df["anomaly"]
+        if use_anomaly and "is_anomaly" in self.psmsl_df.columns:
+            self.psmsl_df["value"] = self.psmsl_df["is_anomaly"]
         elif "value" in self.psmsl_df.columns:
             self.psmsl_df["value"] = self.psmsl_df["value"]
         else:
-            raise ValueError("PSMSL CSV must contain 'value' or 'anomaly' column.")
+            raise ValueError("PSMSL CSV must contain 'value' or 'is_anomaly' column.")
 
         self.grid_shape = grid_shape
         self.lat_bounds = lat_bounds
