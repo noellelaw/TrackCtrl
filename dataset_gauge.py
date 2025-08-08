@@ -1,30 +1,33 @@
-import pandas as pd
-import numpy as np
-import torch
-import xarray as xr
-from torch.utils.data import Dataset
-
 class HurricaneTrackDataset(Dataset):
     def __init__(self, csv_path, nc_path, psmsl_csv,
                  grid_shape=(256, 256), lat_bounds=(5, 45), lon_bounds=(-100, -10),
                  blur_sigma=3, time_offsets_hr=[6, 12, 18, 24, 30], gauge_sigma_px=2.5,
                  use_anomaly=True, debug=False):
+
         self.df = pd.read_csv(csv_path)
         self.nc = xr.open_dataset(nc_path)
 
-        self.psmsl_df = pd.read_csv(psmsl_csv, parse_dates=["date"])
-        self.psmsl_df = self.psmsl_df[
-            self.psmsl_df["latitude"].between(lat_bounds[0], lat_bounds[1]) &
-            self.psmsl_df["longitude"].between(lon_bounds[0], lon_bounds[1])
+        # --- PSMSL CSV ---
+        gauges = pd.read_csv(psmsl_csv, parse_dates=["date"])
+
+        # keep within bounds
+        gauges = gauges[
+            gauges["latitude"].between(lat_bounds[0], lat_bounds[1]) &
+            gauges["longitude"].between(lon_bounds[0], lon_bounds[1])
         ].copy()
 
-        if use_anomaly and "is_anomaly" in self.psmsl_df.columns:
-            self.psmsl_df["value"] = self.psmsl_df["is_anomaly"]
-        elif "value" in self.psmsl_df.columns:
-            self.psmsl_df["value"] = self.psmsl_df["value"]
-        else:
-            raise ValueError("PSMSL CSV must contain 'value' or 'is_anomaly' column.")
+        # choose the value column (anomaly or raw)
+        value_col = "anom_mm" if use_anomaly and "anom_mm" in gauges.columns else "msl_mm"
+        if value_col not in gauges.columns:
+            raise ValueError(f"PSMSL CSV must contain 'anom_mm' or 'msl_mm' (got: {list(gauges.columns)})")
+        gauges["value"] = gauges[value_col].astype(float)
 
+        # precompute year/month and build lookup by (year, month)
+        gauges["year"] = gauges["date"].dt.year
+        gauges["month"] = gauges["date"].dt.month
+        self.gauges_by_ym = {k: v for k, v in gauges.groupby(["year", "month"])}
+
+        # --- rest unchanged ---
         self.grid_shape = grid_shape
         self.lat_bounds = lat_bounds
         self.lon_bounds = lon_bounds
@@ -35,11 +38,10 @@ class HurricaneTrackDataset(Dataset):
         self.debug = debug
 
         self.era5_start = pd.to_datetime(str(self.nc.valid_time.min().values))
-        self.era5_end = pd.to_datetime(str(self.nc.valid_time.max().values))
+        self.era5_end   = pd.to_datetime(str(self.nc.valid_time.max().values))
 
-        storm_groups = list(self.df.groupby("storm_id"))
         self.storm_groups = []
-        for storm_id, group in storm_groups:
+        for storm_id, group in self.df.groupby("storm_id"):
             group = group.copy()
             group["datetime"] = pd.to_datetime(
                 group["date"].astype(str).str.zfill(8) + group["time"].astype(str).str.zfill(4),
@@ -62,47 +64,46 @@ class HurricaneTrackDataset(Dataset):
         y = np.arange(H)[:, None]
         x = np.arange(W)[None, :]
         blob = np.exp(-((x - j)**2 + (y - i)**2) / (2.0 * sigma**2)).astype(np.float32)
-        m = blob.max()
+        m = float(blob.max())
         if m > 1e-8:
             blob /= m
         return blob
 
     def rasterize_gauges(self, year, month):
         H, W = self.grid_shape
-        gauges = self.psmsl_df[
-            (self.psmsl_df["date"].dt.year == year) &
-            (self.psmsl_df["date"].dt.month == month)
-        ]
+        df = self.gauges_by_ym.get((int(year), int(month)))
+        if df is None or df.empty:
+            return np.zeros((H, W), dtype=np.float32)
+
         grid = np.zeros((H, W), dtype=np.float32)
         weight = np.zeros((H, W), dtype=np.float32)
-        for _, r in gauges.iterrows():
-            i, j = self.latlon_to_grid(r["lat"], r["lon"])
+
+        for _, r in df.iterrows():
+            i, j = self.latlon_to_grid(float(r["latitude"]), float(r["longitude"]))
             blob = self.make_gaussian_blob(i, j, H, W, self.gauge_sigma_px)
-            grid += blob * r["value"]
+            grid += blob * float(r["value"])
             weight += blob
-        mask = weight > 1e-8
-        grid[mask] /= weight[mask]
+
+        m = weight > 1e-8
+        grid[m] /= weight[m]
         return grid
 
     def get_reanalysis_composite(self, date_str, time_str):
-        time_str_padded = time_str.zfill(4)
-        dt64 = np.datetime64(f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}T{time_str_padded[:2]}:{time_str_padded[2:]}")
+        t = str(time_str).zfill(4)
+        dt64 = np.datetime64(f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}T{t[:2]}:{t[2:]}")
         idx = np.argmin(np.abs(self.nc.valid_time.values - dt64))
+
         u10 = self.nc.u10.isel(valid_time=idx).interp(latitude=self.lat_grid, longitude=self.lon_grid).values
         v10 = self.nc.v10.isel(valid_time=idx).interp(latitude=self.lat_grid, longitude=self.lon_grid).values
         gauges = self.rasterize_gauges(int(date_str[:4]), int(date_str[4:6]))
+
         def norm(a):
+            a = a.astype(np.float32)
             lo, hi = np.nanpercentile(a, 1), np.nanpercentile(a, 99)
-            return np.clip((a - lo) / (hi - lo + 1e-8), 0, 1).astype(np.float32)
+            if hi > lo:
+                a = np.clip((a - lo) / (hi - lo), 0, 1)
+            else:
+                a = np.zeros_like(a, dtype=np.float32)
+            return a
+
         return np.stack([norm(u10), norm(v10), norm(gauges)], axis=-1)
-
-    def __len__(self):
-        return len(self.storm_groups)
-
-    def __getitem__(self, idx):
-        storm_id, group = self.storm_groups[idx]
-        origin_row = group.iloc[0]
-        lat0, lon0 = self.parse_latlon(origin_row)
-        prompt = f"Given storm origin at {lat0:.2f}, {lon0:.2f}, predict its track."
-        hint = torch.from_numpy(self.get_reanalysis_composite(str(origin_row["date"]), str(origin_row["time"])))
-        return {"hint": hint, "txt": prompt}
